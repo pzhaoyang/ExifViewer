@@ -1,6 +1,6 @@
 # To build exifviewer
 
-objs = exifviewer.o
+objs = exifviewer.o exif_tool.o exif_tagdb.o
 execute = exifviewer
 
 

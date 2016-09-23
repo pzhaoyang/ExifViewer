@@ -1,107 +1,314 @@
 #include "stdio.h"
 #include "string.h"
 #include "stdlib.h"
- /*
-  *
-    typedef enum{
-     BYTE = 1,         //BYTE An 8-bit unsigned integer.
-     ASCII = 2,        //ASCII An 8-bit byte containing one 7-bit ASCII code. The final byte is terminated with NULL.
-     SHORT = 3,        //SHORT A 16-bit (2-byte) unsigned integer
-     LONG = 4,         //LONG A 32-bit (4-byte) unsigned integer
-     RATIONAL = 5,     //RATIONAL Two LONGs. The first LONG is the numerator and the second LONG expresses the denominator.
-     SBYTE = 6,        //An 8-bit signed(two complement) integer.
-     UNDEFINED = 7,    //UNDEFINED An 8-bit byte that can take any value depending on the field definition
-     SSHORT = 8,       //A 16-bit(2 byte) signed (twos-complement) integer.
-     SLONG = 9,        //SLONG A 32-bit (4-byte) signed integer (2's complement notation)
-     SRATIONAL = 10,   //SRATIONAL Two SLONGs. The first SLONG is the numerator and the second SLONG is the denominator
-     FLOAT = 11,       //Signle precision(4-byte) IEEE format.
-     DOUBLE = 12,      //Double precision(8-byte) IEEE format.
-    } TIFF_IFD_TYPE;
-  *
-*/
+#include "exif_info.h"
+#include "exif_tool.h"
+#include "exif_tagdb.h"
+ 
+typedef struct{
+    unsigned int num;
+    unsigned int denom;
+} FRACT;
 
 typedef struct{
-  char ByteOrder[2];
-  unsigned short FurtherID; //42
-  unsigned int offset;// 1stIFD Location
-} TIFF_IFH;
-
-typedef struct{
-    unsigned short TagID;
-    unsigned short Type;
-    unsigned int CountItems; //In the case of one value of SHORT (16 bits), for example, the count is '1' even though it is 2 bytes
-    unsigned int valueOffset; //This tag records the offset from the start of the TIFF header to the position where the value itself is recorded
-} TIFF_IFD;
-
-typedef struct{
-    short Count;
-    TIFF_IFD *pIFD;
-}TIFF_IFD_ENTRY;
-
-#pragma pack (2)
-typedef struct{
-    unsigned short Marker;
-    unsigned short Length;
-    char ExifStr[4];
-    unsigned short Reserve;
-    TIFF_IFH  ifh;
-} APP1_SEG;
-
-typedef struct{
-  unsigned short SOI;
-  APP1_SEG Exif;
-} ImageHeader;
-#pragma pack ()
-
+    signed int num;
+    signed int denom;
+} SFRACT;
 
 static ImageHeader gExifInfo;
+static char* ExposureProgram[]={
+    "Not Defined",
+    "Manual",
+    "Normal",
+    "Av",
+    "Tv",
+    "Creative",
+    "Action",
+    "Portrait",
+    "Landscape"
+};
+static char* SensitivityType[]={
+     "Unknow",
+     "Standard out sensitivity",
+     "Recommended exposure index",
+     "ISO speed",
+     "Standard output sensitivity and Recommended exposure index",
+     "Standard output sensitivity and ISO speed",
+     "Recommended exposure index and ISO speed",
+     "Standard output sensitivity and recommended exposure index and ISO speed"
+};
 
-FILE* openfile(char* file){
-    FILE *fp = NULL;
-    fp = fopen(file, "rb");
-    
-    if(fp == NULL){
-       printf("Cannot open the file!\n");
-       exit(1);
-    }
+static char* ComponentsConfiguration[]={
+    "",
+    "Y",
+    "Cb",
+    "Cr",
+    "R",
+    "G",
+    "B"
+};
 
-    return fp;
-}
+
+
+void printExifs_new(TIFF_IFD_ENTRY *ifd_entry, FILE* fp);
+
 
 void checkImageHeader(){
     if(gExifInfo.Exif.Marker != 0xE1FF){
-        printf("This program just support Exif image File Marker=0x%04x.\n", gExifInfo.Exif.Marker);
-        exit(1);
+        EXIF_ERROR("This program just support Exif image File Marker");
     }
     
     if(gExifInfo.Exif.ifh.ByteOrder[0] != 0x49 && gExifInfo.Exif.ifh.ByteOrder[1] != 0x49){
-        printf("This program just support Big Endian file.\n");
-        exit(1);
+        EXIF_ERROR("This program just support Little Endian file.");
     }
     
     if(gExifInfo.Exif.ifh.FurtherID != 0x2A){
-        printf("This is a not vaild tiff tag.\n");
-        exit(1);
+        EXIF_ERROR("This is a not vaild tiff tag.");
     }
 
     if( gExifInfo.Exif.ExifStr[0] != 0x45 
       &&gExifInfo.Exif.ExifStr[1] != 0x78 
       &&gExifInfo.Exif.ExifStr[2] != 0x69 
       &&gExifInfo.Exif.ExifStr[3] != 0x66){
-        printf("This is not a valid exif file\n");
-        exit(1);
+        EXIF_ERROR("This is not a valid exif file");
     }
 }
 
+void printExifTags(FILE* fp){
+		TIFF_IFD_ENTRY ifd_entry;
 
-void printExifs(TIFF_IFD_ENTRY *ifd_entry){
+    fread(&ifd_entry.Count, 2, 1, fp);
+    ifd_entry.pIFD = (TIFF_IFD*)malloc(sizeof(TIFF_IFD)*ifd_entry.Count);
+    memset(ifd_entry.pIFD, 0x00, sizeof(TIFF_IFD)*ifd_entry.Count);
+    fread(ifd_entry.pIFD, sizeof(TIFF_IFD)*ifd_entry.Count, 1, fp);
+    printExifs_new(&ifd_entry, fp);
+    
+    free(ifd_entry.pIFD);
+}
+
+
+void printExifs_new(TIFF_IFD_ENTRY *ifd_entry, FILE* fp){
     int index = 0;
     
+    printf("----exif counts =%d-----\n", ifd_entry->Count);
     for(index = 0; index < ifd_entry->Count; index++){
+        char ValueString[1024] = {0};
+        int strlen = ifd_entry->pIFD[index].CountItems;
+        TIFF_IFD_TYPE type = ifd_entry->pIFD[index].Type;
+        int bytes = strlen * type;
+        
+        if(ifd_entry->pIFD[index].TagID == 0x927c){
+        	  continue;
+        }
+        
+        if(bytes > sizeof(ifd_entry->pIFD[index].valueOffset)){
+            fseek(fp, ifd_entry->pIFD[index].valueOffset + 12, SEEK_SET);
+            fread(ValueString, strlen-1,1,fp);
+            ValueString[strlen] = '\0';
+            printf("%s: %s\n", getTagName(ifd_entry->pIFD[index].TagID), ValueString);
+        }else{
+		      	if(ifd_entry->pIFD[index].valueOffset == NULL){
+		      		 printf("TagID=0x%04d,TagName=%s, TagType=%d, CountItems=%d\n", 
+		      		 ifd_entry->pIFD[index].TagID, 
+		      		 getTagName(ifd_entry->pIFD[index].TagID),
+		      		 ifd_entry->pIFD[index].Type,
+		      		 ifd_entry->pIFD[index].CountItems
+		      		 );
+		      		 continue;
+		        }
+        	//printf("%s: %d\n", getTagName(ifd_entry->pIFD[index].TagID), ifd_entry->pIFD[index].valueOffset);
+        }
+        //printf("index = %d tagid = 0x%04x\n",index, ifd_entry->pIFD[index].TagID);
+        if(ifd_entry->pIFD[index].TagID == 0x8769){
+            fseek(fp, ifd_entry->pIFD[index].valueOffset + 12, SEEK_SET);
+            
+						printExifTags(fp);
+        }
+    }
+}
+
+void printExifs(TIFF_IFD_ENTRY *ifd_entry, FILE* fp){
+    int index = 0;
+    
+    printf("TagID\tType\tName\tCount\n");
+    for(index = 0; index < ifd_entry->Count; index++){
+        char ValueString[1024] = {0};
+        int strlen = ifd_entry->pIFD[index].CountItems;
         
         switch(ifd_entry->pIFD[index].TagID){
+        /*
+          case 0x010f:
+                fseek(fp, ifd_entry->pIFD[index].valueOffset + 12, SEEK_SET);
+                fread(ValueString, strlen-1,1,fp);
+                ValueString[strlen] = '\0';
+                
+                printf("Manufacturer: %x\n",ifd_entry->pIFD[index].valueOffset);
+                printf("Manufacturer: %s\n",ValueString);
+                break;
+          case 0x0110:
+                fseek(fp, ifd_entry->pIFD[index].valueOffset + 12, SEEK_SET);
+                fread(ValueString, strlen-1,1,fp);
+                ValueString[strlen] = '\0';
+                printf("Modle: %s\n",ValueString);
+                break;
+          case 0x0112:
+                fseek(fp, ifd_entry->pIFD[index].valueOffset + 12, SEEK_SET);
+                fread(ValueString, strlen-1,1,fp);
+                ValueString[strlen] = '\0';
+                printf("Orientation NULL: %s\n",ValueString);
+                break;
+          case 0x011a:
+                fseek(fp, ifd_entry->pIFD[index].valueOffset + 12, SEEK_SET);
+                fread(ValueString, strlen-1,1,fp);
+                ValueString[strlen] = '\0';
+                printf("XResolution NULL: %s\n",ValueString);
+                break;
+          case 0x011b:
+                fseek(fp, ifd_entry->pIFD[index].valueOffset + 12, SEEK_SET);
+                fread(ValueString, strlen-1,1,fp);
+                ValueString[strlen] = '\0';
+                printf("YResolution  NULL: %s\n",ValueString);
+                break;
+          case 0x0128:
+                fseek(fp, ifd_entry->pIFD[index].valueOffset + 12, SEEK_SET);
+                fread(ValueString, strlen-1,1,fp);
+                ValueString[strlen] = '\0';
+                printf("ResolutionUnit   NULL: %s\n",ValueString);
+                break;
+          case 0x0131:
+                fseek(fp, ifd_entry->pIFD[index].valueOffset + 12, SEEK_SET);
+                fread(ValueString, strlen-1,1,fp);
+                ValueString[strlen] = '\0';
+                printf("Software: 0x%lx\n",ifd_entry->pIFD[index].valueOffset);
+                printf("Software: %s\n",ValueString);
+                break;
+          case 0x0132:
+                fseek(fp, ifd_entry->pIFD[index].valueOffset + 12, SEEK_SET);
+                fread(ValueString, strlen-1,1,fp);
+                ValueString[strlen] = '\0';
+                printf("DateTime: %s\n",ValueString);
+                break;
+          case 0x013b:
+                fseek(fp, ifd_entry->pIFD[index].valueOffset + 12, SEEK_SET);
+                fread(ValueString, strlen-1,1,fp);
+                ValueString[strlen] = '\0';
+                printf("Artist NULL: %s\n",ValueString);
+                break;
+          case 0x0213:
+                fseek(fp, ifd_entry->pIFD[index].valueOffset + 12, SEEK_SET);
+                fread(ValueString, strlen-1,1,fp);
+                ValueString[strlen] = '\0';
+                printf("YCbCrPositioning NULL: %s\n",ValueString);
+                break;
+          case 0x8298:
+                fseek(fp, ifd_entry->pIFD[index].valueOffset + 12, SEEK_SET);
+                fread(ValueString, strlen-1,1,fp);
+                ValueString[strlen] = '\0';
+                printf("Copyright: %s\n",ValueString);
+                break;
+          case 0x8769:
+                fseek(fp, ifd_entry->pIFD[index].valueOffset + 12, SEEK_SET);
+                free(ifd_entry->pIFD);
+                memset(ifd_entry, 0x00, sizeof(TIFF_IFD)*ifd_entry->Count);
+                
+                fread(&ifd_entry->Count, 2, 1, fp);
+                ifd_entry->pIFD = (TIFF_IFD*)malloc(sizeof(TIFF_IFD)*ifd_entry->Count);
+                memset(ifd_entry->pIFD, 0x00, sizeof(TIFF_IFD)*ifd_entry->Count);
+                fread(ifd_entry->pIFD, sizeof(TIFF_IFD)*ifd_entry->Count, 1, fp);
+                printExifs(ifd_entry, fp);
+                break;
+          case 0x829a:{
+                FRACT exposureSpeed;
+                fseek(fp, ifd_entry->pIFD[index].valueOffset + 12, SEEK_SET);
+                fread(&exposureSpeed, sizeof(FRACT), 1, fp);
+                printf("Exposure Speed: %d/%d second\n", exposureSpeed.num, exposureSpeed.denom);
+          }
+                break;
+          case 0x829d:{
+                double toDisplay;
+                FRACT fStop;
+                fseek(fp, ifd_entry->pIFD[index].valueOffset + 12, SEEK_SET);
+                fread(&fStop, sizeof(FRACT), 1, fp);
+                toDisplay = ((float)fStop.num)/((float)fStop.denom);
+                printf("F-Stop: f/%.1f\n", toDisplay);
+          }
+                break;
+          case 0x8822:{
+                unsigned short exp;
+                fseek(fp, ifd_entry->pIFD[index].valueOffset + 12, SEEK_SET);
+                fread(&exp, 2, 1, fp);
+                printf("ExposureProgram: %s\n", exp <= 9 ? ExposureProgram[exp] : "Unknow");
+          }
+                break;
+          case 0x8827:{
+                unsigned short iso;
+                iso = ifd_entry->pIFD[index].valueOffset;
+                printf("ISO: %d\n", iso);
+          }
+                break;
+          case 0x8830:{
+               unsigned short st;
+               st = ifd_entry->pIFD[index].valueOffset;
+               printf("SensitivityType: %s\n", st <= 7 ? SensitivityType[st] : "Unknow");
+          }
+               break;
+          case 0x8832:{
+               unsigned short iso;
+               iso = ifd_entry->pIFD[index].valueOffset;
+               printf("RecommendedExposureIndex: %d\n", iso);
+          }
+               break;
+          case 0x9000:{
+                unsigned char exif_version[5] = {0};
+                
+                memcpy(exif_version, &ifd_entry->pIFD[index].valueOffset, 
+                    sizeof(ifd_entry->pIFD[index].valueOffset));
+                printf("ExifVersion: %s\n", exif_version);
+          }
+                break;
+          case 0x9003:
+                fseek(fp, ifd_entry->pIFD[index].valueOffset + 12, SEEK_SET);
+                fread(ValueString, strlen-1,1,fp);
+                ValueString[strlen] = '\0';
+                printf("DataTimeOriginal: %s\n",ValueString);
+                break;
+          case 0x9004:
+                fseek(fp, ifd_entry->pIFD[index].valueOffset + 12, SEEK_SET);
+                fread(ValueString, strlen-1,1,fp);
+                ValueString[strlen] = '\0';
+                printf("DataTimeDigitized: %s\n",ValueString);
+                break;
+          case 0x9101:{
+                unsigned char cc[4] = {0};
+              
+                memcpy(cc, &ifd_entry->pIFD[index].valueOffset, 
+                    sizeof(ifd_entry->pIFD[index].valueOffset));
+                printf("ComponentsConfiguration: %s%s%s%s\n",
+                  ComponentsConfiguration[cc[0]],
+                  ComponentsConfiguration[cc[1]],
+                  ComponentsConfiguration[cc[2]],
+                  ComponentsConfiguration[cc[3]]);
+          }
+                break;
+          case 0x9201:{
+                SFRACT Tv = {0};
+                fseek(fp, ifd_entry->pIFD[index].valueOffset + 12, SEEK_SET);
+                fread(&Tv, sizeof(SFRACT), 1, fp);
+                printf("ShutterSpeedValue: ((APEX))%d/%d sec\n", Tv.num, Tv.denom);
+          }
+                break;
+          case 0x9202:{
+                FRACT Av = {0};
+                fseek(fp, ifd_entry->pIFD[index].valueOffset + 12, SEEK_SET);
+                fread(&Av, sizeof(FRACT), 1, fp);
+                printf("ApertureValue: (APEX)%.1f\n", ((float)Av.num)/((float)Av.denom));
+          }
+                break;
+          */
           default:
-             printf("The tagid is: 0x%04x\n", ifd_entry->pIFD[index].TagID);
+             //printf("The tagid is: 0x%04x, offset= 0x%04x\n", ifd_entry->pIFD[index].TagID,ifd_entry->pIFD[index].valueOffset);
+             printf("0x%04x\t%02d\t%s\t%02d\n", ifd_entry->pIFD[index].TagID,ifd_entry->pIFD[index].Type, "Name", ifd_entry->pIFD[index].CountItems);
+             break;
         }
     }
     
@@ -110,36 +317,27 @@ void ReadExifData(char* imagefile){
     FILE *fp = NULL;
     TIFF_IFD_ENTRY ifd_entry;
     
-    fp = openfile(imagefile);
+    fp = LoadImage(imagefile);
     memset(&gExifInfo, 0, sizeof(gExifInfo));
     fread(&gExifInfo, sizeof(gExifInfo), 1, fp);
     checkImageHeader();
     
     if(gExifInfo.Exif.ifh.offset != 0x00000008){
-       printf("The 0th IFD is not followed immediately.\n");
-       exit(1);
+       EXIF_ERROR("The 0th IFD is not followed immediately.");
     }
     
-    fread(&ifd_entry.Count, 2, 1, fp);
+    printExifTags(fp);
+    /*fread(&ifd_entry.Count, 2, 1, fp);
     ifd_entry.pIFD = (TIFF_IFD*)malloc(sizeof(TIFF_IFD)*ifd_entry.Count);
     memset(ifd_entry.pIFD, 0x00, sizeof(TIFF_IFD)*ifd_entry.Count);
     fread(ifd_entry.pIFD, sizeof(TIFF_IFD)*ifd_entry.Count, 1, fp);
-    printExifs(&ifd_entry);
+    printExifs_new(&ifd_entry, fp);*/
 }
 
-void PrintExifInfo(ImageHeader *exif){
-    printf("\n========pic Info============\n");
-    printf("APP1:       %x\n", exif->SOI);
-    printf("\n============================\n");
-
-}
 int main(int argc, char * argv[]){
-
     if(argc != 2) {
-        printf("Invalid input.\n");
-        exit(0);
+        EXIF_ERROR("Invalid input.");
     }
     
     ReadExifData(argv[1]);
-    PrintExifInfo(&gExifInfo);
 }
