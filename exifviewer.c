@@ -107,7 +107,7 @@ void printExifs_new(TIFF_IFD_ENTRY *ifd_entry, FILE* fp){
             ValueString[strlen] = '\0';
             printf("%s: %s\n", getTagName(ifd_entry->pIFD[index].TagID), ValueString);
         }else{
-		      	if(ifd_entry->pIFD[index].valueOffset == NULL){
+		      	if(ifd_entry->pIFD[index].valueOffset == 0x00){
 		      		 printf("TagID=0x%04d,TagName=%s, TagType=%d, CountItems=%d\n", 
 		      		 ifd_entry->pIFD[index].TagID, 
 		      		 getTagName(ifd_entry->pIFD[index].TagID),
